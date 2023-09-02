@@ -7,6 +7,8 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:geocoder_buddy/geocoder_buddy.dart';
 
 void main() async {
+  // setup Supabase w/ project URL and API key
+  // TODO: probably deal with the API key better...
   WidgetsFlutterBinding.ensureInitialized();
 
   await Supabase.initialize(
@@ -20,19 +22,25 @@ void main() async {
   runApp(MyApp());
 }
 
+// basic app with a single screen
 class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Location List',
       theme: ThemeData(
-        primarySwatch: Colors.blue,
+        primarySwatch: Colors.red,
       ),
       home: LocationListScreen(),
     );
   }
 }
 
+/* 
+  This function is used to get the current location of the user.
+  It is used to calculate the distance between the user and the
+  bathrooms in the database.
+*/
 Future<Position> _determinePosition() async {
   bool serviceEnabled;
   LocationPermission permission;
@@ -70,37 +78,36 @@ Future<Position> _determinePosition() async {
   return await Geolocator.getCurrentPosition();
 }
 
+/**
+ * This screen displays a list of bathrooms that are in the database.
+ */
 class LocationListScreen extends StatefulWidget {
   @override
   _LocationListScreenState createState() => _LocationListScreenState();
 }
 
 class _LocationListScreenState extends State<LocationListScreen> {
+  //main url that all the bathrooms come from (right now only gender neutral/private bathrooms)
   final String mainUrl =
       "https://maps.umd.edu/arcgis/rest/services/Layers/CampusServices/MapServer/0";
+  // list that stores all the JSON urls for the bathrooms and their data (probably not needed anymore)
+  //TODO: refactor
   List<List<dynamic>> subUrls = [];
-  double getLatitude(Coordinates? addressLocation) {
-    return addressLocation?.latitude ?? 0.0;
-  }
 
-  double getLongitude(Coordinates? addressLocation) {
-    return addressLocation?.longitude ?? 0.0;
-  }
-
+  //Given an address, finds the latitude and longitude of the address
   Future<List<double>> getLatLong(String address) async {
     double lat = 0.0;
     double long = 0.0;
     // Query the locations table to find a row with the specified address
-    final response = await Supabase.instance.client
+    //gets a row that has the given address
+    final locations = await Supabase.instance.client
         .from('bathroom_data')
         .select()
         .eq('address', address);
-    final locations = response;
 
     if (locations.isNotEmpty) {
       // If a matching location is found, check if it has valid latitude and longitude values
       final location = locations.first;
-      print("Location was not empty!");
       return [location['latitude'], location['longitude']];
     } else {
       // If the location does not have valid latitude and longitude values, use the geocode package to get them
@@ -123,25 +130,30 @@ class _LocationListScreenState extends State<LocationListScreen> {
     }
   }
 
+//go through all the sub urls and parse the relevant data
   Future<void> fetchSubUrls() async {
     subUrls.clear();
     Position position = await _determinePosition();
 
     // Construct an array of URLs to fetch
     List<String> urls = [];
+    //todo: find a better way to iterate through rather than just setting an arbitrary limit like 145
     for (int i = 1; i < 145; i++) {
       final url = Uri.parse('$mainUrl/$i?f=json').toString();
       urls.add(url);
     }
 
-    // Query the locations table to find rows with URLs that match the URLs being fetched
+    //Get a list of all the urls that are already in the database
     final locations =
         await Supabase.instance.client.from('bathroom_data').select("url");
     // Fetch data for each URL that is not already in the database
     for (final url in urls) {
+      //if the location is empy or there is already a row for that url
+      //TODO: do this based off of address and not URL (may not be deterministic?)
       if (locations.isEmpty ||
           !locations.any((location) => location['url'] == url)) {
         print(url);
+        //get the json, and calculate/parse out relevant fields
         final response = await http.get(Uri.parse(url));
         if (response.statusCode == 200 && !response.body.contains("Invalid")) {
           final json = jsonDecode(response.body);
@@ -149,12 +161,17 @@ class _LocationListScreenState extends State<LocationListScreen> {
           final buildingName = json["feature"]["attributes"]["BUILDINGNAME"];
           final roomNum = json["feature"]["attributes"]["ROOM_NUM"];
           List<double> latLong = await getLatLong(address);
+          //get the distance between the users position and the bathroom
+          //TODO: Refactor this to use distance matrix API? and not just straight line distance
+          //TODO: make this a function because you'll probably want to update it as the users location changes
           double distanceInMeters = await Geolocator.distanceBetween(
             position.latitude,
             position.longitude,
             latLong[0],
             latLong[1],
           );
+
+          //TODO: use a proper units library lol
           double distanceInMiles = distanceInMeters / 1609.34;
           final desc = [
             address,
@@ -162,7 +179,7 @@ class _LocationListScreenState extends State<LocationListScreen> {
             "${distanceInMiles.toStringAsFixed(2)} mi"
           ];
 
-          // Insert the new URL into the database
+          // Insert the new row into the database
           await Supabase.instance.client.from('bathroom_data').insert({
             'url': url,
             'address': address,

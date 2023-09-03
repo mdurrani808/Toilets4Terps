@@ -7,6 +7,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:geocoder_buddy/geocoder_buddy.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:google_fonts/google_fonts.dart'; // Add this line.
+import 'package:flutter_rating_bar/flutter_rating_bar.dart';
 
 void main() async {
   // setup Supabase w/ project URL and API key
@@ -97,7 +98,7 @@ class _LocationListScreenState extends State<LocationListScreen> {
   // list that stores all the JSON urls for the bathrooms and their data (probably not needed anymore)
   //TODO: refactor
   List<List<dynamic>> subUrls = [];
-
+  double currentRating = 0.0;
   //Given an address, finds the latitude and longitude of the address
   Future<List<double>> getLatLong(String address) async {
     double lat = 0.0;
@@ -224,47 +225,7 @@ class _LocationListScreenState extends State<LocationListScreen> {
               future: Supabase.instance.client.from('bathroom_data').select(),
               builder: (context, snapshot) {
                 if (snapshot.hasData) {
-                  List<Map<String, dynamic>>? locations = snapshot.data;
-                  // Sort the locations by distance in miles
-                  locations?.sort((a, b) => (distances?[a['address']] ?? 0)
-                      .compareTo(distances?[b['address']] ?? 0));
-                  return ListView.separated(
-                    separatorBuilder: (BuildContext context, int index) {
-                      return SizedBox(height: 4);
-                    },
-                    itemCount: locations!.length,
-                    itemBuilder: (context, index) {
-                      Map<String, dynamic> location = locations![index];
-                      String address = location['address'];
-                      String buildingName = location['building_name'];
-                      String roomNum = location['room_num'];
-                      double? distanceInMiles = distances![address];
-                      // Generate a Google Maps link for the address
-                      String googleMapsLink =
-                          'https://www.google.com/maps/search/?api=1&query=${Uri.encodeComponent(address)}';
-                      return ListTile(
-                          visualDensity: VisualDensity.comfortable,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(30),
-                          ),
-                          style: ListTileStyle.list,
-                          minVerticalPadding: 10,
-                          tileColor: Colors.grey[200],
-                          leading: IconButton.filledTonal(
-                            alignment: Alignment.centerLeft,
-                            color: Colors.redAccent,
-                            icon: Icon(Icons.pin_drop_rounded),
-                            onPressed: () {
-                              // Open the Google Maps link when the button is clicked
-                              launchUrl(Uri.parse(googleMapsLink));
-                            },
-                          ),
-                          title: Text('$buildingName, Room $roomNum'),
-                          subtitle: Text(address),
-                          trailing: Text(
-                              '${distanceInMiles?.toStringAsFixed(2)} mi'));
-                    },
-                  );
+                  return createExpansionTiles(snapshot, distances);
                 } else if (snapshot.hasError) {
                   return Center(child: Text('Error: ${snapshot.error}'));
                 } else {
@@ -279,6 +240,104 @@ class _LocationListScreenState extends State<LocationListScreen> {
           return Center(child: CircularProgressIndicator());
         }
       },
+    );
+  }
+
+  // Function to update the bathroom rating in the database
+  Future<void> updateBathroomRatingInDatabase(
+      String address, double rating, int id) async {
+    await Supabase.instance.client
+        .from('bathroom_data')
+        .update({'rating': rating}).eq('id', id);
+    ;
+  }
+
+// Function to build the star rating using flutter_rating_bar
+  Widget buildRatingBar(String address, double newRating, int id) {
+    return RatingBar.builder(
+      initialRating: newRating, // The current rating from the database
+      minRating: 1,
+      itemCount: 5,
+      direction: Axis.horizontal,
+      allowHalfRating: false,
+      itemBuilder: (context, _) => Icon(
+        Icons.star,
+        color: Colors.amber,
+      ),
+      onRatingUpdate: (rating) {
+        // When the user updates the rating, update it in the database
+        updateBathroomRatingInDatabase(address, rating, id);
+        setState(() {
+          // Update the UI to reflect the new rating
+        });
+      },
+    );
+  }
+
+  ListView createExpansionTiles(
+      AsyncSnapshot<List<Map<String, dynamic>>> snapshot,
+      Map<String, double>? distances) {
+    List<Map<String, dynamic>>? locations = snapshot.data;
+    // Sort the locations by distance in miles
+    locations?.sort((a, b) => (distances?[a['address']] ?? 0)
+        .compareTo(distances?[b['address']] ?? 0));
+    List<Widget> expansionTiles = [];
+    for (int index = 0; index < locations!.length; index++) {
+      Map<String, dynamic> location = locations[index];
+      String address = location['address'];
+      int id = location['id'];
+      String buildingName = location['building_name'];
+      String roomNum = location['room_num'];
+      double rating = location['rating'];
+      double? distanceInMiles = distances![address];
+      // Generate a Google Maps link for the address
+      String googleMapsLink =
+          'https://www.google.com/maps/search/?api=1&query=${Uri.encodeComponent(address)}';
+
+      // Define a separate RatingBar widget for each bathroom
+      RatingBar ratingBar = RatingBar.builder(
+        initialRating: rating,
+        minRating: 1,
+        itemCount: 5,
+        direction: Axis.horizontal,
+        allowHalfRating: false,
+        itemBuilder: (context, _) => Icon(
+          Icons.star,
+          color: Colors.amber,
+        ),
+        onRatingUpdate: (newRating) {
+          // Update the rating for this specific bathroom in the database
+          updateBathroomRatingInDatabase(address, newRating, id);
+        },
+      );
+
+      // Create an ExpansionTile for each bathroom
+      expansionTiles.add(
+        ExpansionTile(
+          title: Text('$buildingName, Room $roomNum'),
+          subtitle: Text(address),
+          trailing: Text('${distanceInMiles?.toStringAsFixed(2)} mi'),
+          children: [
+            // Additional information about the bathroom can be added here
+            // You can display any other details you have in this section
+            Padding(
+              padding: EdgeInsets.symmetric(horizontal: 16.0),
+              child: ratingBar, // Use the separate RatingBar widget
+            ),
+            ListTile(
+              leading: Icon(Icons.pin_drop_rounded),
+              title: Text('Open in Google Maps'),
+              onTap: () {
+                // Open the Google Maps link when the button is clicked
+                launchUrl(Uri.parse(googleMapsLink));
+              },
+            ),
+          ],
+        ),
+      );
+    }
+    return ListView(
+      children: expansionTiles,
     );
   }
 }

@@ -5,6 +5,8 @@ import 'package:geocode/geocode.dart';
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:geocoder_buddy/geocoder_buddy.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:google_fonts/google_fonts.dart'; // Add this line.
 
 void main() async {
   // setup Supabase w/ project URL and API key
@@ -27,9 +29,11 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Location List',
+      title: 'Nearest Bathrooms',
       theme: ThemeData(
+        textTheme: GoogleFonts.montserratTextTheme(),
         primarySwatch: Colors.red,
+        useMaterial3: true,
       ),
       home: LocationListScreen(),
     );
@@ -130,11 +134,7 @@ class _LocationListScreenState extends State<LocationListScreen> {
     }
   }
 
-//go through all the sub urls and parse the relevant data
-  Future<void> fetchSubUrls() async {
-    subUrls.clear();
-    Position position = await _determinePosition();
-
+  Future<void> updateDatabase() async {
     // Construct an array of URLs to fetch
     List<String> urls = [];
     //todo: find a better way to iterate through rather than just setting an arbitrary limit like 145
@@ -146,6 +146,7 @@ class _LocationListScreenState extends State<LocationListScreen> {
     //Get a list of all the urls that are already in the database
     final locations =
         await Supabase.instance.client.from('bathroom_data').select("url");
+
     // Fetch data for each URL that is not already in the database
     for (final url in urls) {
       //if the location is empy or there is already a row for that url
@@ -161,23 +162,6 @@ class _LocationListScreenState extends State<LocationListScreen> {
           final buildingName = json["feature"]["attributes"]["BUILDINGNAME"];
           final roomNum = json["feature"]["attributes"]["ROOM_NUM"];
           List<double> latLong = await getLatLong(address);
-          //get the distance between the users position and the bathroom
-          //TODO: Refactor this to use distance matrix API? and not just straight line distance
-          //TODO: make this a function because you'll probably want to update it as the users location changes
-          double distanceInMeters = await Geolocator.distanceBetween(
-            position.latitude,
-            position.longitude,
-            latLong[0],
-            latLong[1],
-          );
-
-          //TODO: use a proper units library lol
-          double distanceInMiles = distanceInMeters / 1609.34;
-          final desc = [
-            address,
-            buildingName + ", Room " + roomNum,
-            "${distanceInMiles.toStringAsFixed(2)} mi"
-          ];
 
           // Insert the new row into the database
           await Supabase.instance.client.from('bathroom_data').insert({
@@ -188,37 +172,113 @@ class _LocationListScreenState extends State<LocationListScreen> {
             'latitude': latLong[0],
             'longitude': latLong[1],
           });
-
-          subUrls.add(desc);
         }
       }
     }
+  }
 
-    setState(() {});
+  Future<Map<String, double>> getDistances() async {
+    Position position = await _determinePosition();
+
+    // Create a map to store the distances
+    Map<String, double> distances = {};
+
+    // Get all rows from the database
+    final locations =
+        await Supabase.instance.client.from('bathroom_data').select();
+    for (final location in locations) {
+      double distanceInMeters = await Geolocator.distanceBetween(
+        position.latitude,
+        position.longitude,
+        location['latitude'],
+        location['longitude'],
+      );
+      double distanceInMiles = distanceInMeters / 1609.34;
+      distances[location['address']] = distanceInMiles;
+    }
+    return distances;
   }
 
   @override
   void initState() {
     super.initState();
-    fetchSubUrls();
+    updateDatabase();
   }
 
-  @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('Location List'),
-      ),
-      body: ListView.builder(
-        itemCount: subUrls.length,
-        itemBuilder: (context, index) {
-          return ListTile(
-            title: Text(subUrls[index][1]),
-            subtitle: Text(subUrls[index][0]),
-            trailing: Text(subUrls[index][2]),
+    return FutureBuilder<Map<String, double>>(
+      future: getDistances(),
+      builder: (context, snapshot) {
+        if (snapshot.hasData) {
+          Map<String, double>? distances = snapshot.data;
+          return Scaffold(
+            appBar: AppBar(title: Text('Nearest Bathrooms'), actions: <Widget>[
+              IconButton(
+                icon: Icon(Icons.refresh),
+                onPressed: () {
+                  getDistances();
+                },
+              )
+            ]),
+            body: FutureBuilder<List<Map<String, dynamic>>>(
+              future: Supabase.instance.client.from('bathroom_data').select(),
+              builder: (context, snapshot) {
+                if (snapshot.hasData) {
+                  List<Map<String, dynamic>>? locations = snapshot.data;
+                  // Sort the locations by distance in miles
+                  locations?.sort((a, b) => (distances?[a['address']] ?? 0)
+                      .compareTo(distances?[b['address']] ?? 0));
+                  return ListView.separated(
+                    separatorBuilder: (BuildContext context, int index) {
+                      return SizedBox(height: 4);
+                    },
+                    itemCount: locations!.length,
+                    itemBuilder: (context, index) {
+                      Map<String, dynamic> location = locations![index];
+                      String address = location['address'];
+                      String buildingName = location['building_name'];
+                      String roomNum = location['room_num'];
+                      double? distanceInMiles = distances![address];
+                      // Generate a Google Maps link for the address
+                      String googleMapsLink =
+                          'https://www.google.com/maps/search/?api=1&query=${Uri.encodeComponent(address)}';
+                      return ListTile(
+                          visualDensity: VisualDensity.comfortable,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(30),
+                          ),
+                          style: ListTileStyle.list,
+                          minVerticalPadding: 10,
+                          tileColor: Colors.grey[200],
+                          leading: IconButton.filledTonal(
+                            alignment: Alignment.centerLeft,
+                            color: Colors.redAccent,
+                            icon: Icon(Icons.pin_drop_rounded),
+                            onPressed: () {
+                              // Open the Google Maps link when the button is clicked
+                              launchUrl(Uri.parse(googleMapsLink));
+                            },
+                          ),
+                          title: Text('$buildingName, Room $roomNum'),
+                          subtitle: Text(address),
+                          trailing: Text(
+                              '${distanceInMiles?.toStringAsFixed(2)} mi'));
+                    },
+                  );
+                } else if (snapshot.hasError) {
+                  return Center(child: Text('Error: ${snapshot.error}'));
+                } else {
+                  return Center(child: CircularProgressIndicator());
+                }
+              },
+            ),
           );
-        },
-      ),
+        } else if (snapshot.hasError) {
+          return Center(child: Text('Error: ${snapshot.error}'));
+        } else {
+          return Center(child: CircularProgressIndicator());
+        }
+      },
     );
   }
 }

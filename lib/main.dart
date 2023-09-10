@@ -1,18 +1,31 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:geocode/geocode.dart';
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:geocoder_buddy/geocoder_buddy.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:google_fonts/google_fonts.dart'; // Add this line.
 import 'package:flutter_rating_bar/flutter_rating_bar.dart';
+import 'package:uuid/uuid.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
+String? userId;
 void main() async {
   // setup Supabase w/ project URL and API key
   // TODO: probably deal with the API key better...
   WidgetsFlutterBinding.ensureInitialized();
+  userId = await getUserIdFromLocalStorage();
+  if (userId == null) {
+    // No user ID found, generate a new one
+    userId = const Uuid().v1();
+
+    // Save to storage for next time
+    saveUserIdToLocalStorage();
+  } else {
+    // User ID found, use it
+    userId = userId.toString();
+  }
 
   await Supabase.initialize(
       url: 'https://gggtostjtbrnkemvaafb.supabase.co',
@@ -22,11 +35,13 @@ void main() async {
         "Access-Control-Allow-Origin": "*",
       });
 
-  runApp(MyApp());
+  runApp(const MyApp());
 }
 
 // basic app with a single screen
 class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -36,11 +51,12 @@ class MyApp extends StatelessWidget {
         primarySwatch: Colors.red,
         useMaterial3: true,
       ),
-      home: LocationListScreen(),
+      home: const LocationListScreen(),
     );
   }
 }
 
+// Call this on initState and assign to userId variable
 /* 
   This function is used to get the current location of the user.
   It is used to calculate the distance between the user and the
@@ -83,10 +99,23 @@ Future<Position> _determinePosition() async {
   return await Geolocator.getCurrentPosition();
 }
 
-/**
- * This screen displays a list of bathrooms that are in the database.
- */
+Future<void> saveUserIdToLocalStorage() async {
+  const storage = FlutterSecureStorage();
+  await storage.write(key: 'userId', value: userId);
+}
+
+Future<String?> getUserIdFromLocalStorage() async {
+  const storage = FlutterSecureStorage();
+  return storage.read(key: 'userId');
+}
+
+// Call this on initState and assign to userId variable
+
+// Call this on initState after generating the ID
+/// This screen displays a list of bathrooms that are in the database.
 class LocationListScreen extends StatefulWidget {
+  const LocationListScreen({super.key});
+
   @override
   _LocationListScreenState createState() => _LocationListScreenState();
 }
@@ -188,7 +217,7 @@ class _LocationListScreenState extends State<LocationListScreen> {
     final locations =
         await Supabase.instance.client.from('bathroom_data').select();
     for (final location in locations) {
-      double distanceInMeters = await Geolocator.distanceBetween(
+      double distanceInMeters = Geolocator.distanceBetween(
         position.latitude,
         position.longitude,
         location['latitude'],
@@ -203,9 +232,12 @@ class _LocationListScreenState extends State<LocationListScreen> {
   @override
   void initState() {
     super.initState();
+    // Check if we already have a user ID
+
     updateDatabase();
   }
 
+  @override
   Widget build(BuildContext context) {
     return FutureBuilder<Map<String, double>>(
       future: getDistances(),
@@ -213,9 +245,9 @@ class _LocationListScreenState extends State<LocationListScreen> {
         if (snapshot.hasData) {
           Map<String, double>? distances = snapshot.data;
           return Scaffold(
-            appBar: AppBar(title: Text('Nearest Bathrooms'), actions: <Widget>[
+            appBar: AppBar(title: const Text('Nearest Bathrooms'), actions: <Widget>[
               IconButton(
-                icon: Icon(Icons.refresh),
+                icon: const Icon(Icons.refresh),
                 onPressed: () {
                   getDistances();
                 },
@@ -229,7 +261,7 @@ class _LocationListScreenState extends State<LocationListScreen> {
                 } else if (snapshot.hasError) {
                   return Center(child: Text('Error: ${snapshot.error}'));
                 } else {
-                  return Center(child: CircularProgressIndicator());
+                  return const Center(child: CircularProgressIndicator());
                 }
               },
             ),
@@ -237,41 +269,57 @@ class _LocationListScreenState extends State<LocationListScreen> {
         } else if (snapshot.hasError) {
           return Center(child: Text('Error: ${snapshot.error}'));
         } else {
-          return Center(child: CircularProgressIndicator());
+          return const Center(child: CircularProgressIndicator());
         }
       },
     );
   }
 
-  // Function to update the bathroom rating in the database
-  Future<void> updateBathroomRatingInDatabase(
-      String address, double rating, int id) async {
-    await Supabase.instance.client
-        .from('bathroom_data')
-        .update({'rating': rating}).eq('id', id);
-    ;
+  Future<double?> getRatingForBathroom(
+    String buildingName,
+    String roomNum,
+    String userId,
+  ) async {
+    final result = await Supabase.instance.client
+        .from('reviews')
+        .select('rating')
+        .eq('device_id', userId)
+        .eq('building_name', buildingName)
+        .eq('room_num', roomNum);
+    if (result.isEmpty) {
+      return 1;
+    } else {
+      return result.first['rating'];
+    }
   }
 
-// Function to build the star rating using flutter_rating_bar
-  Widget buildRatingBar(String address, double newRating, int id) {
-    return RatingBar.builder(
-      initialRating: newRating, // The current rating from the database
-      minRating: 1,
-      itemCount: 5,
-      direction: Axis.horizontal,
-      allowHalfRating: false,
-      itemBuilder: (context, _) => Icon(
-        Icons.star,
-        color: Colors.amber,
-      ),
-      onRatingUpdate: (rating) {
-        // When the user updates the rating, update it in the database
-        updateBathroomRatingInDatabase(address, rating, id);
-        setState(() {
-          // Update the UI to reflect the new rating
-        });
-      },
-    );
+  // Function to update the bathroom rating in the database
+  Future<void> updateBathroomRatingInDatabase(
+      String userId, double rating, String buildingName, String roomNum) async {
+    final existing = await Supabase.instance.client
+        .from('bathroom_data')
+        .select()
+        .eq('user_id', userId)
+        .eq('building_name', buildingName)
+        .eq('room_num', roomNum);
+
+    if (existing.isEmpty) {
+      // Insert new row with user id
+      await Supabase.instance.client.from('bathroom_data').insert({
+        'user_id': userId,
+        'building_name': buildingName,
+        'room_num': roomNum,
+        'rating': rating
+      });
+    } else {
+      // Update existing row for user
+      await Supabase.instance.client
+          .from('bathroom_data')
+          .update({'rating': rating})
+          .eq('user_id', userId)
+          .eq('building_name', buildingName)
+          .eq('room_num', roomNum);
+    }
   }
 
   ListView createExpansionTiles(
@@ -301,41 +349,142 @@ class _LocationListScreenState extends State<LocationListScreen> {
         itemCount: 5,
         direction: Axis.horizontal,
         allowHalfRating: false,
-        itemBuilder: (context, _) => Icon(
+        itemBuilder: (context, _) => const Icon(
           Icons.star,
           color: Colors.amber,
         ),
         onRatingUpdate: (newRating) {
           // Update the rating for this specific bathroom in the database
-          updateBathroomRatingInDatabase(address, newRating, id);
+          updateBathroomRatingInDatabase(
+              userId!, rating, buildingName, roomNum);
         },
       );
 
       // Create an ExpansionTile for each bathroom
-      expansionTiles.add(
-        ExpansionTile(
-          title: Text('$buildingName, Room $roomNum'),
-          subtitle: Text(address),
-          trailing: Text('${distanceInMiles?.toStringAsFixed(2)} mi'),
+      expansionTiles.add(ExpansionTile(
+        title: Text('$buildingName, Room $roomNum'),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            // Additional information about the bathroom can be added here
-            // You can display any other details you have in this section
-            Padding(
-              padding: EdgeInsets.symmetric(horizontal: 16.0),
-              child: ratingBar, // Use the separate RatingBar widget
-            ),
-            ListTile(
-              leading: Icon(Icons.pin_drop_rounded),
-              title: Text('Open in Google Maps'),
-              onTap: () {
-                // Open the Google Maps link when the button is clicked
-                launchUrl(Uri.parse(googleMapsLink));
-              },
+            // Rating pill
+            FutureBuilder(
+                future: getRatingForBathroom(buildingName, roomNum, userId!),
+                builder: (context, snapshot) {
+                  if (snapshot.hasData) {
+                    double? rating = snapshot.data;
+
+                    if (rating != -1) {
+                      // Only show if rating is not null
+                      return Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8.0, vertical: 4.0),
+                        decoration: BoxDecoration(
+                          color: Colors.amber,
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Row(
+                          children: [
+                            const SizedBox(
+                                width:
+                                    4.0), // Add space between the icon and text
+                            Text(
+                              '${rating?.toStringAsFixed(1)} / 5',
+                              style: const TextStyle(color: Colors.white),
+                            ),
+                          ],
+                        ),
+                      );
+                    } else {
+                      return const SizedBox(); // Rating is null, show nothing
+                    }
+                  } else {
+                    return const SizedBox(); // Loading
+                  }
+                }),
+            const SizedBox(width: 8.0), // Add space between the two pills
+
+            // Distance pill
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6.0, vertical: 4.0),
+              decoration: BoxDecoration(
+                color: Colors.blue,
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Row(
+                children: [
+                  const SizedBox(width: 4.0), // Add space between the icon and text
+                  Text(
+                    '${distanceInMiles?.toStringAsFixed(2)} mi',
+                    style: const TextStyle(color: Colors.white),
+                  ),
+                ],
+              ),
             ),
           ],
         ),
-      );
+        children: [
+          // Additional information about the bathroom can be added here
+          // You can display any other details you have in this section
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    textStyle: const TextStyle(fontSize: 20),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(
+                          20), // This gives the button rounded edges
+                    ),
+                  ),
+                  icon: const Icon(Icons.map), // This adds a map icon before the text
+                  label: const Text(''),
+                  onPressed: () {
+                    // Open the Google Maps link when the button is clicked
+                    launchUrl(Uri.parse(googleMapsLink));
+                  },
+                ),
+              ),
+              const SizedBox(width: 8.0), // Add space between the two buttons
+              Expanded(
+                child: ElevatedButton.icon(
+                  icon:
+                      const Icon(Icons.star), // This adds a star icon before the text
+                  style: ElevatedButton.styleFrom(
+                    textStyle: const TextStyle(fontSize: 20),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(
+                          20), // This gives the button rounded edges
+                    ),
+                  ),
+                  label: const Text(''),
+                  onPressed: () {
+                    showDialog(
+                      context: context,
+                      builder: (BuildContext context) {
+                        return AlertDialog(
+                          content: ratingBar,
+                          actions: [
+                            TextButton(
+                              child: const Text('Submit Rating'),
+                              onPressed: () {
+                                updateBathroomRatingInDatabase(
+                                    userId!, rating, buildingName, roomNum);
+                                Navigator.of(context).pop();
+                              },
+                            ),
+                          ],
+                        );
+                      },
+                    );
+                  },
+                ),
+              ),
+            ],
+          )
+        ],
+      ));
     }
+
     return ListView(
       children: expansionTiles,
     );

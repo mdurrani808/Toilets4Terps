@@ -28,9 +28,9 @@ void main() async {
   }
 
   await Supabase.initialize(
-      url: 'https://gggtostjtbrnkemvaafb.supabase.co',
+      url: '',
       anonKey:
-          'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdnZ3Rvc3RqdGJybmtlbXZhYWZiIiwicm9sZSI6ImFub24iLCJpYXQiOjE2OTM2MjA2OTQsImV4cCI6MjAwOTE5NjY5NH0.MM1gQ-B9mEdynHEsQYch4njVnzvPEXA2ls3kYalVCkk',
+          '',
       headers: {
         "Access-Control-Allow-Origin": "*",
       });
